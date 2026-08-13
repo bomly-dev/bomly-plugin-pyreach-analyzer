@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "bomly.plugin.package.v1",
+  "id": "pyreach",
+  "name": "pyreach Reachability Analyzer",
+  "version": "0.1.0",
+  "kind": "analyzer",
+  "runtime": "hashicorp-grpc",
+  "pluginApiVersion": "bomly.plugin.v1",
+  "entrypoint": {
+    "linux/amd64": "bomly-plugin-pyreach-analyzer",
+    "linux/arm64": "bomly-plugin-pyreach-analyzer",
+    "darwin/amd64": "bomly-plugin-pyreach-analyzer",
+    "darwin/arm64": "bomly-plugin-pyreach-analyzer",
+    "windows/amd64": "bomly-plugin-pyreach-analyzer.exe"
+  },
+  "description": "Python reachability analyzer for Bomly: scans project imports to mark which vulnerable Python distributions are actually imported (package tier). Supports pip, Pipenv, Poetry, uv, and PDM projects.",
+  "homepage": "https://github.com/bomly-dev/bomly-plugin-pyreach-analyzer",
+  "license": "Apache-2.0"
+}
