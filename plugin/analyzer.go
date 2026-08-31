@@ -74,7 +74,7 @@ func (a Analyzer) Applicable(_ context.Context, req model.AnalyzeRequest) (bool,
 	if req.Graph == nil || req.Registry == nil {
 		return false, nil
 	}
-	for _, dep := range req.Graph.Nodes() {
+	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
@@ -88,19 +88,19 @@ func (a Analyzer) Applicable(_ context.Context, req model.AnalyzeRequest) (bool,
 }
 
 // dependencyPURL returns the registry key for a dependency node.
-func dependencyPURL(dep *model.Dependency) string {
+func dependencyPURL(dep *model.DependencyNode) string {
 	if dep == nil {
 		return ""
 	}
 	if dep.PackageRef != "" {
 		return dep.PackageRef
 	}
-	return model.CanonicalPackageURLFromDependency(dep)
+	return dep.NodeID()
 }
 
 // vulnerabilitiesForDependency returns the registry vulnerabilities for a
 // dependency node, or nil when the package is absent from the registry.
-func vulnerabilitiesForDependency(req model.AnalyzeRequest, dep *model.Dependency) []model.Vulnerability {
+func vulnerabilitiesForDependency(req model.AnalyzeRequest, dep *model.DependencyNode) []model.Vulnerability {
 	if req.Registry == nil || dep == nil {
 		return nil
 	}
@@ -283,7 +283,7 @@ func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes Runn
 	timestamp := now.UTC().Format(time.RFC3339)
 	hopsByID := computeReachablePackageHops(req.Graph, runRes.ImportedDistributions)
 	dynamicImports := runRes.DynamicImportsDetected
-	for _, dep := range req.Graph.Nodes() {
+	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
@@ -293,16 +293,20 @@ func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes Runn
 		vulns := vulnerabilitiesForDependency(req, dep)
 		for i := range vulns {
 			vuln := &vulns[i]
-			if vuln.Reachability != nil && vuln.Reachability.Analyzer == Name {
-				continue
-			}
-			r := &model.Reachability{
+			// No skip on an earlier project pass. That skip was the loss
+			// phase 2.8 removes: a workspace's second project can import a
+			// package the first does not, and the first answer stood. Each
+			// project root now contributes evidence and the annotation is
+			// the derived summary over all of them.
+			r := &model.ReachabilityEvidence{
+				ModuleRoot:             projectRoot,
+				DependencyRefs:         []string{dep.NodeID()},
 				Analyzer:               Name,
 				AnalyzedAt:             timestamp,
 				Tier:                   model.TierPackage,
 				DynamicImportsDetected: dynamicImports,
 			}
-			if hops, ok := hopsByID[dep.ID]; ok {
+			if hops, ok := hopsByID[dep.NodeID()]; ok {
 				r.Status = model.ReachabilityReachable
 				h := hops
 				r.Hops = &h
@@ -313,10 +317,29 @@ func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes Runn
 				r.Reason = "package-not-imported"
 				outcome.unreachable++
 			}
-			vuln.Reachability = r
+			vuln.Reachability = withEvidence(vuln.Reachability, *r, timestamp)
 		}
 	}
 	return outcome
+}
+
+// withEvidence appends one project root's finding to a vulnerability's
+// reachability record and recomputes the summary.
+//
+// The summary is derived, never accumulated by hand: reachable anywhere wins,
+// and unreachable requires every root to say so. Writing that rule at each
+// call site is how the first-root-wins behaviour got there.
+func withEvidence(current *model.Reachability, evidence model.ReachabilityEvidence, timestamp string) *model.Reachability {
+	var all []model.ReachabilityEvidence
+	if current != nil && current.Analyzer == Name {
+		all = current.Evidence
+	}
+	all = append(all, evidence)
+	summary := model.DeriveReachability(all)
+	summary.Analyzer = Name
+	summary.AnalyzedAt = timestamp
+	summary.Evidence = all
+	return &summary
 }
 
 // computeReachablePackageHops returns a map from graph package ID to
@@ -331,18 +354,18 @@ func computeReachablePackageHops(g *model.Graph, imports map[string]struct{}) ma
 		return hops
 	}
 	queue := make([]string, 0)
-	for _, pkg := range g.Nodes() {
+	for _, pkg := range g.DependencyNodes() {
 		if pkg == nil || !isPythonPackage(pkg) {
 			continue
 		}
 		if !isPackageImported(pkg, imports) {
 			continue
 		}
-		if _, ok := hops[pkg.ID]; ok {
+		if _, ok := hops[pkg.NodeID()]; ok {
 			continue
 		}
-		hops[pkg.ID] = 0
-		queue = append(queue, pkg.ID)
+		hops[pkg.NodeID()] = 0
+		queue = append(queue, pkg.NodeID())
 	}
 	for len(queue) > 0 {
 		id := queue[0]
@@ -356,11 +379,11 @@ func computeReachablePackageHops(g *model.Graph, imports map[string]struct{}) ma
 			if dep == nil {
 				continue
 			}
-			if _, ok := hops[dep.ID]; ok {
+			if _, ok := hops[dep.NodeID()]; ok {
 				continue
 			}
-			hops[dep.ID] = current + 1
-			queue = append(queue, dep.ID)
+			hops[dep.NodeID()] = current + 1
+			queue = append(queue, dep.NodeID())
 		}
 	}
 	return hops
@@ -370,7 +393,7 @@ func computeReachablePackageHops(g *model.Graph, imports map[string]struct{}) ma
 // of its known forms) appears in the runner's import set. Names are
 // compared in PEP 503 normalized form so that hyphens, underscores,
 // and case differences don't cause mismatches.
-func isPackageImported(pkg *model.Dependency, imports map[string]struct{}) bool {
+func isPackageImported(pkg *model.DependencyNode, imports map[string]struct{}) bool {
 	if pkg == nil || len(imports) == 0 {
 		return false
 	}
@@ -390,7 +413,7 @@ func isPackageImported(pkg *model.Dependency, imports map[string]struct{}) bool 
 func annotateProjectUnknown(req model.AnalyzeRequest, projectRoot, reason string, now time.Time) int {
 	timestamp := now.UTC().Format(time.RFC3339)
 	count := 0
-	for _, dep := range req.Graph.Nodes() {
+	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
@@ -417,7 +440,7 @@ func annotateProjectUnknown(req model.AnalyzeRequest, projectRoot, reason string
 
 func annotateAllUnknown(req model.AnalyzeRequest, reason string, now time.Time) {
 	timestamp := now.UTC().Format(time.RFC3339)
-	for _, dep := range req.Graph.Nodes() {
+	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
@@ -441,7 +464,7 @@ func annotateAllUnknown(req model.AnalyzeRequest, reason string, now time.Time) 
 // runs per-project, so any Python package physically located under
 // projectRoot (or with no recorded location) is treated as belonging
 // to it.
-func packageBelongsToProjectRoot(pkg *model.Dependency, projectRoot string) bool {
+func packageBelongsToProjectRoot(pkg *model.DependencyNode, projectRoot string) bool {
 	if pkg == nil {
 		return false
 	}

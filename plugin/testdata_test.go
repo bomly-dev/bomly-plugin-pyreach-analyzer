@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	model "github.com/bomly-dev/bomly-sdk"
+	"github.com/bomly-dev/bomly-sdk/testkit"
 )
 
 func pythonFixture(parts ...string) string {
@@ -23,9 +24,9 @@ func pythonFixture(parts ...string) string {
 func TestDiscoverProjectRootsFromTestdata(t *testing.T) {
 	root := pythonFixture("project")
 	g := model.New()
-	pkg := model.NewDependency(model.Dependency{Coordinates: model.Coordinates{Name: "requests",
-		Ecosystem: model.EcosystemPython}, Locations: []model.PackageLocation{{RealPath: filepath.Join(root, "pkg", "helpers.py")}},
-	})
+	pkg := testkit.MustDependencyCoords(t, model.Coordinates{Name: "requests",
+		Ecosystem: model.EcosystemPython})
+	pkg.Locations = []model.PackageLocation{{RealPath: filepath.Join(root, "pkg", "helpers.py")}}
 	if err := g.AddNode(pkg); err != nil {
 		t.Fatal(err)
 	}
