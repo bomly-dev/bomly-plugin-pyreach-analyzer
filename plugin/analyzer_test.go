@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	model "github.com/bomly-dev/bomly-sdk"
+	"github.com/bomly-dev/bomly-sdk/testkit"
 )
 
 // fakeRunner returns a canned RunnerResult or error for tests.
@@ -49,14 +50,14 @@ func newSeed() (*model.Graph, *model.PackageRegistry) {
 
 // addPyDep adds a Python dependency node to g and (when vulns are supplied) a
 // registry package keyed by the dependency PURL carrying them.
-func addPyDep(t *testing.T, g *model.Graph, reg *model.PackageRegistry, projectDir, name, version string, vulns ...model.Vulnerability) *model.Dependency {
+func addPyDep(t *testing.T, g *model.Graph, reg *model.PackageRegistry, projectDir, name, version string, vulns ...model.Vulnerability) *model.DependencyNode {
 	t.Helper()
-	dep := model.NewDependency(model.Dependency{Coordinates: model.Coordinates{Name: name,
+	dep := testkit.MustDependencyCoords(t, model.Coordinates{Name: name,
 		Version:        version,
 		Ecosystem:      model.EcosystemPython,
-		PackageManager: "pip"}, Locations: []model.PackageLocation{{RealPath: filepath.Join(projectDir, "requirements.txt")}},
-	})
-	purl := model.CanonicalPackageURLFromDependency(dep)
+		PackageManager: "pip"})
+	dep.Locations = []model.PackageLocation{{RealPath: filepath.Join(projectDir, "requirements.txt")}}
+	purl := dep.NodeID()
 	dep.PackageRef = purl
 	if err := g.AddNode(dep); err != nil {
 		t.Fatal(err)
@@ -67,7 +68,7 @@ func addPyDep(t *testing.T, g *model.Graph, reg *model.PackageRegistry, projectD
 }
 
 // reachOf returns the reachability for a dependency's first vulnerability.
-func reachOf(t *testing.T, reg *model.PackageRegistry, dep *model.Dependency) *model.Reachability {
+func reachOf(t *testing.T, reg *model.PackageRegistry, dep *model.DependencyNode) *model.Reachability {
 	t.Helper()
 	pkg, ok := reg.Get(dep.PackageRef)
 	if !ok || pkg == nil || len(pkg.Vulnerabilities) == 0 {
@@ -181,8 +182,8 @@ func TestAnalyzerApplicableRequiresPythonVulns(t *testing.T) {
 	a := Analyzer{}
 
 	g, reg := newSeed()
-	goDep := model.NewDependency(model.Dependency{Coordinates: model.Coordinates{Name: "lib", Ecosystem: "go"}})
-	goDep.PackageRef = model.CanonicalPackageURLFromDependency(goDep)
+	goDep := testkit.MustDependencyCoords(t, model.Coordinates{Org: "example.com", Name: "lib", Ecosystem: "go"})
+	goDep.PackageRef = goDep.NodeID()
 	_ = g.AddNode(goDep)
 	reg.Ensure(goDep.PackageRef).Vulnerabilities = []model.Vulnerability{{ID: "x"}}
 	if ok, err := a.Applicable(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || ok {
@@ -207,7 +208,7 @@ func TestAnalyzerMarksTransitiveDepReachable(t *testing.T) {
 	g, reg := newSeed()
 	requests := addPyDep(t, g, reg, projectDir, "requests", "2.32.3", model.Vulnerability{ID: "GHSA-direct", Source: "osv", ParsedSeverity: "high"})
 	urllib3 := addPyDep(t, g, reg, projectDir, "urllib3", "2.2.1", model.Vulnerability{ID: "GHSA-transitive", Source: "osv", ParsedSeverity: "high"})
-	if err := g.AddEdge(requests.ID, urllib3.ID); err != nil {
+	if err := g.AddEdge(requests.NodeID(), urllib3.NodeID()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -224,7 +225,7 @@ func TestAnalyzerMarksTransitiveDepReachable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, dep := range []*model.Dependency{requests, urllib3} {
+	for _, dep := range []*model.DependencyNode{requests, urllib3} {
 		r := reachOf(t, reg, dep)
 		if r == nil {
 			t.Fatalf("%s: missing Reachability", dep.Name)
@@ -240,7 +241,7 @@ func TestAnalyzerDoesNotExpandThroughUnimportedRoots(t *testing.T) {
 	g, reg := newSeed()
 	pytest := addPyDep(t, g, reg, projectDir, "pytest", "8.0.0", model.Vulnerability{ID: "GHSA-devtool", Source: "osv", ParsedSeverity: "high"})
 	pluggy := addPyDep(t, g, reg, projectDir, "pluggy", "1.0.0", model.Vulnerability{ID: "GHSA-trans", Source: "osv", ParsedSeverity: "high"})
-	if err := g.AddEdge(pytest.ID, pluggy.ID); err != nil {
+	if err := g.AddEdge(pytest.NodeID(), pluggy.NodeID()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -256,7 +257,7 @@ func TestAnalyzerDoesNotExpandThroughUnimportedRoots(t *testing.T) {
 	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatal(err)
 	}
-	for _, dep := range []*model.Dependency{pytest, pluggy} {
+	for _, dep := range []*model.DependencyNode{pytest, pluggy} {
 		r := reachOf(t, reg, dep)
 		if r == nil {
 			t.Fatalf("%s: missing Reachability", dep.Name)
@@ -269,26 +270,26 @@ func TestAnalyzerDoesNotExpandThroughUnimportedRoots(t *testing.T) {
 
 func TestComputeReachablePackageHopsHandlesCycles(t *testing.T) {
 	g := model.New()
-	a := model.NewDependency(model.Dependency{Coordinates: model.Coordinates{Name: "a", Version: "1.0.0", Ecosystem: model.EcosystemPython}})
-	b := model.NewDependency(model.Dependency{Coordinates: model.Coordinates{Name: "b", Version: "1.0.0", Ecosystem: model.EcosystemPython}})
+	a := testkit.MustDependencyCoords(t, model.Coordinates{Name: "a", Version: "1.0.0", Ecosystem: model.EcosystemPython})
+	b := testkit.MustDependencyCoords(t, model.Coordinates{Name: "b", Version: "1.0.0", Ecosystem: model.EcosystemPython})
 	if err := g.AddNode(a); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.AddNode(b); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.AddEdge(a.ID, b.ID); err != nil {
+	if err := g.AddEdge(a.NodeID(), b.NodeID()); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.AddEdge(b.ID, a.ID); err != nil {
+	if err := g.AddEdge(b.NodeID(), a.NodeID()); err != nil {
 		t.Fatal(err)
 	}
 
 	got := computeReachablePackageHops(g, map[string]struct{}{"a": {}})
-	if h, ok := got[a.ID]; !ok || h != 0 {
+	if h, ok := got[a.NodeID()]; !ok || h != 0 {
 		t.Errorf("expected a at hop 0: got=%v ok=%v", h, ok)
 	}
-	if h, ok := got[b.ID]; !ok || h != 1 {
+	if h, ok := got[b.NodeID()]; !ok || h != 1 {
 		t.Errorf("expected b at hop 1 (transitive of a): got=%v ok=%v", h, ok)
 	}
 }
