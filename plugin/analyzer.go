@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,7 +126,7 @@ func (a Analyzer) Analyze(ctx context.Context, req model.AnalyzeRequest) (model.
 
 	overallStart := time.Now()
 	projectRoots := discoverProjectRoots(req)
-	attributor := newRootAttributor(req.Graph, projectRoots)
+	attributor := model.NewRootAttributor(projectRoots, req.Graph)
 	if len(projectRoots) == 0 {
 		logger.Info("pyreach: no Python project roots discovered; marking all Python vulnerabilities as unknown")
 		annotateAllUnknown(req, "no-project-root-discovered", time.Now())
@@ -279,7 +278,7 @@ type applyOutcome struct {
 // requests) would be missed otherwise. The closure follows
 // Graph.Dependencies edges, so it sees exactly the dep tree the
 // Python detector resolved from the lockfile.
-func applyRunnerResult(req model.AnalyzeRequest, attributor rootAttributor, projectRoot string, runRes RunnerResult, now time.Time) applyOutcome {
+func applyRunnerResult(req model.AnalyzeRequest, attributor model.RootAttributor, projectRoot string, runRes RunnerResult, now time.Time) applyOutcome {
 	var outcome applyOutcome
 	timestamp := now.UTC().Format(time.RFC3339)
 	hopsByID := computeReachablePackageHops(req.Graph, runRes.ImportedDistributions)
@@ -288,7 +287,7 @@ func applyRunnerResult(req model.AnalyzeRequest, attributor rootAttributor, proj
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
-		if attributor.attribute(dep, projectRoot) == attributedElsewhere {
+		if attributor.Attribute(dep, projectRoot) == model.AttributedElsewhere {
 			continue
 		}
 		vulns := vulnerabilitiesForDependency(req, dep)
@@ -434,14 +433,14 @@ func isPackageImported(pkg *model.DependencyNode, imports map[string]struct{}) b
 // at. DeriveReachability requires every root to say unreachable, so B's
 // unknown is exactly what keeps the aggregate honest -- but only if it is
 // recorded.
-func annotateProjectUnknown(req model.AnalyzeRequest, attributor rootAttributor, projectRoot, reason string, now time.Time) int {
+func annotateProjectUnknown(req model.AnalyzeRequest, attributor model.RootAttributor, projectRoot, reason string, now time.Time) int {
 	timestamp := now.UTC().Format(time.RFC3339)
 	count := 0
 	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
-		if attributor.attribute(dep, projectRoot) == attributedElsewhere {
+		if attributor.Attribute(dep, projectRoot) == model.AttributedElsewhere {
 			continue
 		}
 		vulns := vulnerabilitiesForDependency(req, dep)
@@ -481,16 +480,6 @@ func annotateAllUnknown(req model.AnalyzeRequest, reason string, now time.Time) 
 			}, timestamp)
 		}
 	}
-}
-
-func pathContainsRoot(path, root string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(root)
-	rel, err := filepath.Rel(cleanRoot, cleanPath)
-	if err != nil {
-		return false
-	}
-	return !strings.HasPrefix(rel, "..")
 }
 
 // failureReason maps runner errors to stable machine-readable codes.
