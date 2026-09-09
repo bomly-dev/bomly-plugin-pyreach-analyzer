@@ -2,7 +2,6 @@ package plugin
 
 import (
 	"context"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -127,6 +126,7 @@ func (a Analyzer) Analyze(ctx context.Context, req model.AnalyzeRequest) (model.
 
 	overallStart := time.Now()
 	projectRoots := discoverProjectRoots(req)
+	attributor := model.NewRootAttributor(projectRoots, req.Graph)
 	if len(projectRoots) == 0 {
 		logger.Info("pyreach: no Python project roots discovered; marking all Python vulnerabilities as unknown")
 		annotateAllUnknown(req, "no-project-root-discovered", time.Now())
@@ -149,7 +149,7 @@ func (a Analyzer) Analyze(ctx context.Context, req model.AnalyzeRequest) (model.
 		case <-ctx.Done():
 			logger.Info("pyreach: context cancelled; skipping project",
 				zap.String("project_root", root))
-			annotateProjectUnknown(req, root, "cancelled", time.Now())
+			annotateProjectUnknown(req, attributor, root, "cancelled", time.Now())
 			continue
 		default:
 		}
@@ -163,7 +163,7 @@ func (a Analyzer) Analyze(ctx context.Context, req model.AnalyzeRequest) (model.
 				zap.Duration("duration", time.Since(projectStart)),
 				zap.Error(err))
 			reason := failureReason(err)
-			added := annotateProjectUnknown(req, root, reason, time.Now())
+			added := annotateProjectUnknown(req, attributor, root, reason, time.Now())
 			stats.Unknown += added
 			continue
 		}
@@ -172,7 +172,7 @@ func (a Analyzer) Analyze(ctx context.Context, req model.AnalyzeRequest) (model.
 		} else {
 			cacheMisses++
 		}
-		applied := applyRunnerResult(req, root, runResult, time.Now())
+		applied := applyRunnerResult(req, attributor, root, runResult, time.Now())
 		stats.Reachable += applied.reachable
 		stats.Unreachable += applied.unreachable
 		stats.Unknown += applied.unknown
@@ -278,7 +278,7 @@ type applyOutcome struct {
 // requests) would be missed otherwise. The closure follows
 // Graph.Dependencies edges, so it sees exactly the dep tree the
 // Python detector resolved from the lockfile.
-func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes RunnerResult, now time.Time) applyOutcome {
+func applyRunnerResult(req model.AnalyzeRequest, attributor model.RootAttributor, projectRoot string, runRes RunnerResult, now time.Time) applyOutcome {
 	var outcome applyOutcome
 	timestamp := now.UTC().Format(time.RFC3339)
 	hopsByID := computeReachablePackageHops(req.Graph, runRes.ImportedDistributions)
@@ -287,7 +287,7 @@ func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes Runn
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
-		if !packageBelongsToProjectRoot(dep, projectRoot) {
+		if attributor.Attribute(dep, projectRoot) == model.AttributedElsewhere {
 			continue
 		}
 		vulns := vulnerabilitiesForDependency(req, dep)
@@ -298,9 +298,22 @@ func applyRunnerResult(req model.AnalyzeRequest, projectRoot string, runRes Runn
 			// package the first does not, and the first answer stood. Each
 			// project root now contributes evidence and the annotation is
 			// the derived summary over all of them.
+			// No DependencyRefs. Row 2.8 makes the module root the
+			// mandatory attribution floor and node references the optional
+			// ceiling, "only where genuinely attributable" -- and pyreach
+			// cannot attribute below the root. Its seed set is keyed by
+			// canonical distribution name (isPackageImported), so two graph
+			// nodes for one distribution at two versions are seeded
+			// identically and the analysis never separates them; a pip
+			// environment installs one copy per distribution, which is why
+			// the name key was enough. Naming whichever node this loop is
+			// visiting would publish an occurrence the analysis did not
+			// establish, and the display contract reads a ref as "this exact
+			// occurrence" rather than "somewhere in this root". Empty refs
+			// mean "not stated", never "no occurrence". This becomes
+			// attributable if the seed match ever becomes version-aware.
 			r := &model.ReachabilityEvidence{
 				ModuleRoot:             projectRoot,
-				DependencyRefs:         []string{dep.NodeID()},
 				Analyzer:               Name,
 				AnalyzedAt:             timestamp,
 				Tier:                   model.TierPackage,
@@ -410,28 +423,36 @@ func isPackageImported(pkg *model.DependencyNode, imports map[string]struct{}) b
 	return false
 }
 
-func annotateProjectUnknown(req model.AnalyzeRequest, projectRoot, reason string, now time.Time) int {
+// annotateProjectUnknown records that one project root could not be analyzed.
+//
+// It deliberately does not skip a vulnerability another root already
+// annotated. That skip was the same first-root-wins loss phase 2.8 removes,
+// left standing in the failure path: with roots A and B, A succeeding with
+// "unreachable" and B's runner failing, the skip dropped B entirely and the
+// summary read "unreachable" for a workspace half of which was never looked
+// at. DeriveReachability requires every root to say unreachable, so B's
+// unknown is exactly what keeps the aggregate honest -- but only if it is
+// recorded.
+func annotateProjectUnknown(req model.AnalyzeRequest, attributor model.RootAttributor, projectRoot, reason string, now time.Time) int {
 	timestamp := now.UTC().Format(time.RFC3339)
 	count := 0
 	for _, dep := range req.Graph.DependencyNodes() {
 		if dep == nil || !isPythonPackage(dep) {
 			continue
 		}
-		if !packageBelongsToProjectRoot(dep, projectRoot) {
+		if attributor.Attribute(dep, projectRoot) == model.AttributedElsewhere {
 			continue
 		}
 		vulns := vulnerabilitiesForDependency(req, dep)
 		for i := range vulns {
-			if vulns[i].Reachability != nil {
-				continue
-			}
-			vulns[i].Reachability = &model.Reachability{
+			vulns[i].Reachability = withEvidence(vulns[i].Reachability, model.ReachabilityEvidence{
+				ModuleRoot: projectRoot,
 				Analyzer:   Name,
 				Status:     model.ReachabilityUnknown,
 				Tier:       model.TierNone,
 				Reason:     reason,
 				AnalyzedAt: timestamp,
-			}
+			}, timestamp)
 			count++
 		}
 	}
@@ -446,51 +467,19 @@ func annotateAllUnknown(req model.AnalyzeRequest, reason string, now time.Time) 
 		}
 		vulns := vulnerabilitiesForDependency(req, dep)
 		for i := range vulns {
-			if vulns[i].Reachability != nil {
-				continue
-			}
-			vulns[i].Reachability = &model.Reachability{
+			// One evidence record with no module root, which the SDK reads as
+			// a whole-scan claim covering every site. A bare annotation would
+			// leave consumers unable to tell an empty evidence list meaning
+			// "nothing was recorded" from one meaning "no root was found".
+			vulns[i].Reachability = withEvidence(vulns[i].Reachability, model.ReachabilityEvidence{
 				Analyzer:   Name,
 				Status:     model.ReachabilityUnknown,
 				Tier:       model.TierNone,
 				Reason:     reason,
 				AnalyzedAt: timestamp,
-			}
+			}, timestamp)
 		}
 	}
-}
-
-// packageBelongsToProjectRoot is a best-effort attribution. pyreach
-// runs per-project, so any Python package physically located under
-// projectRoot (or with no recorded location) is treated as belonging
-// to it.
-func packageBelongsToProjectRoot(pkg *model.DependencyNode, projectRoot string) bool {
-	if pkg == nil {
-		return false
-	}
-	if len(pkg.Locations) == 0 {
-		return true
-	}
-	for _, loc := range pkg.Locations {
-		path := loc.RealPath
-		if path == "" {
-			continue
-		}
-		if pathContainsRoot(path, projectRoot) {
-			return true
-		}
-	}
-	return true
-}
-
-func pathContainsRoot(path, root string) bool {
-	cleanPath := filepath.Clean(path)
-	cleanRoot := filepath.Clean(root)
-	rel, err := filepath.Rel(cleanRoot, cleanPath)
-	if err != nil {
-		return false
-	}
-	return !strings.HasPrefix(rel, "..")
 }
 
 // failureReason maps runner errors to stable machine-readable codes.
