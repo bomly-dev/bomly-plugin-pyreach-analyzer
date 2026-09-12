@@ -110,8 +110,8 @@ func scanImports(r io.Reader) (map[string]struct{}, error) {
 // scanner because real `import` and `from` lines never contain string
 // literals before the comment marker.
 func stripComment(line string) string {
-	if i := strings.Index(line, "#"); i >= 0 {
-		return line[:i]
+	if before, _, ok := strings.Cut(line, "#"); ok {
+		return before
 	}
 	return line
 }
