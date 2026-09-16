@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	model "github.com/bomly-dev/bomly-sdk"
 	"github.com/bomly-dev/bomly-sdk/testkit"
+
+	sdkmodel "github.com/bomly-dev/bomly-sdk/model"
+	sdkplugin "github.com/bomly-dev/bomly-sdk/plugin"
 )
 
 // fakeRunner returns a canned RunnerResult or error for tests.
@@ -44,19 +46,19 @@ func newPythonProjectDir(t *testing.T) string {
 	return dir
 }
 
-func newSeed() (*model.Graph, *model.PackageRegistry) {
-	return model.New(), model.NewPackageRegistry()
+func newSeed() (*sdkmodel.Graph, *sdkmodel.PackageRegistry) {
+	return sdkmodel.New(), sdkmodel.NewPackageRegistry()
 }
 
 // addPyDep adds a Python dependency node to g and (when vulns are supplied) a
 // registry package keyed by the dependency PURL carrying them.
-func addPyDep(t *testing.T, g *model.Graph, reg *model.PackageRegistry, projectDir, name, version string, vulns ...model.Vulnerability) *model.DependencyNode {
+func addPyDep(t *testing.T, g *sdkmodel.Graph, reg *sdkmodel.PackageRegistry, projectDir, name, version string, vulns ...sdkmodel.Vulnerability) *sdkmodel.DependencyNode {
 	t.Helper()
-	dep := testkit.MustDependencyCoords(t, model.Coordinates{Name: name,
+	dep := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{Name: name,
 		Version:        version,
-		Ecosystem:      model.EcosystemPython,
+		Ecosystem:      sdkmodel.EcosystemPython,
 		PackageManager: "pip"})
-	dep.Locations = []model.PackageLocation{{RealPath: filepath.Join(projectDir, "requirements.txt")}}
+	dep.Locations = []sdkmodel.PackageLocation{{RealPath: filepath.Join(projectDir, "requirements.txt")}}
 	purl := dep.NodeID()
 	dep.PackageRef = purl
 	if err := g.AddNode(dep); err != nil {
@@ -68,7 +70,7 @@ func addPyDep(t *testing.T, g *model.Graph, reg *model.PackageRegistry, projectD
 }
 
 // reachOf returns the reachability for a dependency's first vulnerability.
-func reachOf(t *testing.T, reg *model.PackageRegistry, dep *model.DependencyNode) *model.Reachability {
+func reachOf(t *testing.T, reg *sdkmodel.PackageRegistry, dep *sdkmodel.DependencyNode) *sdkmodel.Reachability {
 	t.Helper()
 	pkg, ok := reg.Get(dep.PackageRef)
 	if !ok || pkg == nil || len(pkg.Vulnerabilities) == 0 {
@@ -80,7 +82,7 @@ func reachOf(t *testing.T, reg *model.PackageRegistry, dep *model.DependencyNode
 func TestAnalyzerMarksReachableWhenPackageIsImported(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	dep := addPyDep(t, g, reg, projectDir, "requests", "1.0.0", model.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
+	dep := addPyDep(t, g, reg, projectDir, "requests", "1.0.0", sdkmodel.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
 
 	a := Analyzer{
 		DisableCache: true,
@@ -92,7 +94,7 @@ func TestAnalyzerMarksReachableWhenPackageIsImported(t *testing.T) {
 		},
 	}
 
-	res, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir})
+	res, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir})
 	if err != nil {
 		t.Fatalf("Analyze err: %v", err)
 	}
@@ -100,10 +102,10 @@ func TestAnalyzerMarksReachableWhenPackageIsImported(t *testing.T) {
 	if r == nil {
 		t.Fatal("expected Reachability to be set")
 	}
-	if r.Status != model.ReachabilityReachable {
+	if r.Status != sdkmodel.ReachabilityReachable {
 		t.Errorf("status = %q, want reachable", r.Status)
 	}
-	if r.Tier != model.TierPackage {
+	if r.Tier != sdkmodel.TierPackage {
 		t.Errorf("tier = %q, want package", r.Tier)
 	}
 	if res.AnalyzerStats[Name].Reachable != 1 {
@@ -114,7 +116,7 @@ func TestAnalyzerMarksReachableWhenPackageIsImported(t *testing.T) {
 func TestAnalyzerMarksUnreachableWhenPackageNotImported(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	dep := addPyDep(t, g, reg, projectDir, "left-pad", "1.0.0", model.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
+	dep := addPyDep(t, g, reg, projectDir, "left-pad", "1.0.0", sdkmodel.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
 
 	a := Analyzer{
 		DisableCache: true,
@@ -125,11 +127,11 @@ func TestAnalyzerMarksUnreachableWhenPackageNotImported(t *testing.T) {
 			},
 		},
 	}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatal(err)
 	}
 	r := reachOf(t, reg, dep)
-	if r.Status != model.ReachabilityUnreachable || r.Tier != model.TierPackage || r.Reason != "package-not-imported" {
+	if r.Status != sdkmodel.ReachabilityUnreachable || r.Tier != sdkmodel.TierPackage || r.Reason != "package-not-imported" {
 		t.Errorf("unexpected reachability: %+v", r)
 	}
 }
@@ -137,17 +139,17 @@ func TestAnalyzerMarksUnreachableWhenPackageNotImported(t *testing.T) {
 func TestAnalyzerDegradesToUnknownOnRunnerError(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	dep := addPyDep(t, g, reg, projectDir, "requests", "1.0.0", model.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
+	dep := addPyDep(t, g, reg, projectDir, "requests", "1.0.0", sdkmodel.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
 
 	a := Analyzer{
 		DisableCache: true,
 		Runner:       &fakeRunner{err: errors.New("project dir not accessible: not found")},
 	}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatalf("Analyze should not error on runner failure: %v", err)
 	}
 	r := reachOf(t, reg, dep)
-	if r.Status != model.ReachabilityUnknown {
+	if r.Status != sdkmodel.ReachabilityUnknown {
 		t.Errorf("status = %q, want unknown", r.Status)
 	}
 	if r.Reason != "missing-toolchain" {
@@ -158,7 +160,7 @@ func TestAnalyzerDegradesToUnknownOnRunnerError(t *testing.T) {
 func TestAnalyzerNormalisesDistributionNames(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	dep := addPyDep(t, g, reg, projectDir, "PyYAML", "1.0.0", model.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
+	dep := addPyDep(t, g, reg, projectDir, "PyYAML", "1.0.0", sdkmodel.Vulnerability{ID: "GHSA-test", Source: "osv", ParsedSeverity: "high"})
 
 	a := Analyzer{
 		DisableCache: true,
@@ -169,11 +171,11 @@ func TestAnalyzerNormalisesDistributionNames(t *testing.T) {
 			},
 		},
 	}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatal(err)
 	}
 	r := reachOf(t, reg, dep)
-	if r == nil || r.Status != model.ReachabilityReachable {
+	if r == nil || r.Status != sdkmodel.ReachabilityReachable {
 		t.Errorf("PyYAML / pyyaml not matched: %+v", r)
 	}
 }
@@ -182,23 +184,23 @@ func TestAnalyzerApplicableRequiresPythonVulns(t *testing.T) {
 	a := Analyzer{}
 
 	g, reg := newSeed()
-	goDep := testkit.MustDependencyCoords(t, model.Coordinates{Org: "example.com", Name: "lib", Ecosystem: "go"})
+	goDep := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{Org: "example.com", Name: "lib", Ecosystem: "go"})
 	goDep.PackageRef = goDep.NodeID()
 	_ = g.AddNode(goDep)
-	reg.Ensure(goDep.PackageRef).Vulnerabilities = []model.Vulnerability{{ID: "x"}}
-	if ok, err := a.Applicable(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || ok {
+	reg.Ensure(goDep.PackageRef).Vulnerabilities = []sdkmodel.Vulnerability{{ID: "x"}}
+	if ok, err := a.Applicable(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || ok {
 		t.Errorf("Applicable on go-only graph = (%v, %v); want (false, nil)", ok, err)
 	}
 
 	g, reg = newSeed()
-	addPyDep(t, g, reg, t.TempDir(), "requests", "1.0.0", model.Vulnerability{ID: "x"})
-	if ok, err := a.Applicable(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || !ok {
+	addPyDep(t, g, reg, t.TempDir(), "requests", "1.0.0", sdkmodel.Vulnerability{ID: "x"})
+	if ok, err := a.Applicable(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || !ok {
 		t.Errorf("Applicable on python-with-vulns graph = (%v, %v); want (true, nil)", ok, err)
 	}
 
 	g, reg = newSeed()
 	addPyDep(t, g, reg, t.TempDir(), "requests", "1.0.0") // no vulns
-	if ok, err := a.Applicable(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || ok {
+	if ok, err := a.Applicable(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg}); err != nil || ok {
 		t.Errorf("Applicable on python-without-vulns graph = (%v, %v); want (false, nil)", ok, err)
 	}
 }
@@ -206,8 +208,8 @@ func TestAnalyzerApplicableRequiresPythonVulns(t *testing.T) {
 func TestAnalyzerMarksTransitiveDepReachable(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	requests := addPyDep(t, g, reg, projectDir, "requests", "2.32.3", model.Vulnerability{ID: "GHSA-direct", Source: "osv", ParsedSeverity: "high"})
-	urllib3 := addPyDep(t, g, reg, projectDir, "urllib3", "2.2.1", model.Vulnerability{ID: "GHSA-transitive", Source: "osv", ParsedSeverity: "high"})
+	requests := addPyDep(t, g, reg, projectDir, "requests", "2.32.3", sdkmodel.Vulnerability{ID: "GHSA-direct", Source: "osv", ParsedSeverity: "high"})
+	urllib3 := addPyDep(t, g, reg, projectDir, "urllib3", "2.2.1", sdkmodel.Vulnerability{ID: "GHSA-transitive", Source: "osv", ParsedSeverity: "high"})
 	if err := g.AddEdge(requests.NodeID(), urllib3.NodeID()); err != nil {
 		t.Fatal(err)
 	}
@@ -221,16 +223,16 @@ func TestAnalyzerMarksTransitiveDepReachable(t *testing.T) {
 			},
 		},
 	}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatal(err)
 	}
 
-	for _, dep := range []*model.DependencyNode{requests, urllib3} {
+	for _, dep := range []*sdkmodel.DependencyNode{requests, urllib3} {
 		r := reachOf(t, reg, dep)
 		if r == nil {
 			t.Fatalf("%s: missing Reachability", dep.Name)
 		}
-		if r.Status != model.ReachabilityReachable {
+		if r.Status != sdkmodel.ReachabilityReachable {
 			t.Errorf("%s: status = %q, want reachable", dep.Name, r.Status)
 		}
 	}
@@ -239,8 +241,8 @@ func TestAnalyzerMarksTransitiveDepReachable(t *testing.T) {
 func TestAnalyzerDoesNotExpandThroughUnimportedRoots(t *testing.T) {
 	projectDir := newPythonProjectDir(t)
 	g, reg := newSeed()
-	pytest := addPyDep(t, g, reg, projectDir, "pytest", "8.0.0", model.Vulnerability{ID: "GHSA-devtool", Source: "osv", ParsedSeverity: "high"})
-	pluggy := addPyDep(t, g, reg, projectDir, "pluggy", "1.0.0", model.Vulnerability{ID: "GHSA-trans", Source: "osv", ParsedSeverity: "high"})
+	pytest := addPyDep(t, g, reg, projectDir, "pytest", "8.0.0", sdkmodel.Vulnerability{ID: "GHSA-devtool", Source: "osv", ParsedSeverity: "high"})
+	pluggy := addPyDep(t, g, reg, projectDir, "pluggy", "1.0.0", sdkmodel.Vulnerability{ID: "GHSA-trans", Source: "osv", ParsedSeverity: "high"})
 	if err := g.AddEdge(pytest.NodeID(), pluggy.NodeID()); err != nil {
 		t.Fatal(err)
 	}
@@ -254,24 +256,24 @@ func TestAnalyzerDoesNotExpandThroughUnimportedRoots(t *testing.T) {
 			},
 		},
 	}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: projectDir}); err != nil {
 		t.Fatal(err)
 	}
-	for _, dep := range []*model.DependencyNode{pytest, pluggy} {
+	for _, dep := range []*sdkmodel.DependencyNode{pytest, pluggy} {
 		r := reachOf(t, reg, dep)
 		if r == nil {
 			t.Fatalf("%s: missing Reachability", dep.Name)
 		}
-		if r.Status != model.ReachabilityUnreachable {
+		if r.Status != sdkmodel.ReachabilityUnreachable {
 			t.Errorf("%s: status = %q, want unreachable", dep.Name, r.Status)
 		}
 	}
 }
 
 func TestComputeReachablePackageHopsHandlesCycles(t *testing.T) {
-	g := model.New()
-	a := testkit.MustDependencyCoords(t, model.Coordinates{Name: "a", Version: "1.0.0", Ecosystem: model.EcosystemPython})
-	b := testkit.MustDependencyCoords(t, model.Coordinates{Name: "b", Version: "1.0.0", Ecosystem: model.EcosystemPython})
+	g := sdkmodel.New()
+	a := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{Name: "a", Version: "1.0.0", Ecosystem: sdkmodel.EcosystemPython})
+	b := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{Name: "b", Version: "1.0.0", Ecosystem: sdkmodel.EcosystemPython})
 	if err := g.AddNode(a); err != nil {
 		t.Fatal(err)
 	}
@@ -297,14 +299,14 @@ func TestComputeReachablePackageHopsHandlesCycles(t *testing.T) {
 func TestAnalyzerMarksUnknownWhenNoProjectRootDiscovered(t *testing.T) {
 	dir := t.TempDir() // no pyproject.toml
 	g, reg := newSeed()
-	dep := addPyDep(t, g, reg, dir, "requests", "1.0.0", model.Vulnerability{ID: "x"})
+	dep := addPyDep(t, g, reg, dir, "requests", "1.0.0", sdkmodel.Vulnerability{ID: "x"})
 
 	a := Analyzer{DisableCache: true, Runner: &fakeRunner{}}
-	if _, err := a.Analyze(context.Background(), model.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: dir}); err != nil {
+	if _, err := a.Analyze(context.Background(), sdkplugin.AnalyzeRequest{Graph: g, Registry: reg, ProjectPath: dir}); err != nil {
 		t.Fatal(err)
 	}
 	r := reachOf(t, reg, dep)
-	if r == nil || r.Status != model.ReachabilityUnknown {
+	if r == nil || r.Status != sdkmodel.ReachabilityUnknown {
 		t.Errorf("expected Unknown status, got %+v", r)
 	}
 	if r.Reason != "no-project-root-discovered" {

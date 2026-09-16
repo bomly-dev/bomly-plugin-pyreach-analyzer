@@ -8,8 +8,10 @@ import (
 	"sort"
 	"testing"
 
-	model "github.com/bomly-dev/bomly-sdk"
 	"github.com/bomly-dev/bomly-sdk/testkit"
+
+	sdkmodel "github.com/bomly-dev/bomly-sdk/model"
+	sdkplugin "github.com/bomly-dev/bomly-sdk/plugin"
 )
 
 func pythonFixture(parts ...string) string {
@@ -23,17 +25,17 @@ func pythonFixture(parts ...string) string {
 
 func TestDiscoverProjectRootsFromTestdata(t *testing.T) {
 	root := pythonFixture("project")
-	g := model.New()
-	pkg := testkit.MustDependencyCoords(t, model.Coordinates{Name: "requests",
-		Ecosystem: model.EcosystemPython})
-	pkg.Locations = []model.PackageLocation{{RealPath: filepath.Join(root, "pkg", "helpers.py")}}
+	g := sdkmodel.New()
+	pkg := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{Name: "requests",
+		Ecosystem: sdkmodel.EcosystemPython})
+	pkg.Locations = []sdkmodel.PackageLocation{{RealPath: filepath.Join(root, "pkg", "helpers.py")}}
 	if err := g.AddNode(pkg); err != nil {
 		t.Fatal(err)
 	}
-	got := discoverProjectRoots(model.AnalyzeRequest{
+	got := discoverProjectRoots(sdkplugin.AnalyzeRequest{
 		Graph:       g,
 		ProjectPath: filepath.Join(root, "app.py"),
-		ExecutionTarget: model.ExecutionTarget{
+		ExecutionTarget: sdkplugin.ExecutionTarget{
 			Location: filepath.Join(root, "pkg"),
 		},
 	})
@@ -81,8 +83,8 @@ func TestPythonDynamicImportDetectionFromTestdata(t *testing.T) {
 
 func TestPythonDescriptorAndFailureReasons(t *testing.T) {
 	a := Analyzer{}
-	if err := a.Ready(context.Background(), model.AnalyzeRequest{}); err != nil || a.Descriptor().Name != Name {
-		t.Fatalf("descriptor = %+v ready_err=%v", a.Descriptor(), a.Ready(context.Background(), model.AnalyzeRequest{}))
+	if err := a.Ready(context.Background(), sdkplugin.AnalyzeRequest{}); err != nil || a.Descriptor().Name != Name {
+		t.Fatalf("descriptor = %+v ready_err=%v", a.Descriptor(), a.Ready(context.Background(), sdkplugin.AnalyzeRequest{}))
 	}
 	if !(RunnerResult{SourceFiles: 1}).hasResult() || (RunnerResult{}).hasResult() {
 		t.Fatal("runner result actionability mismatch")

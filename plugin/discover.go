@@ -6,7 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	model "github.com/bomly-dev/bomly-sdk"
+	sdkmodel "github.com/bomly-dev/bomly-sdk/model"
+	sdkplugin "github.com/bomly-dev/bomly-sdk/plugin"
 )
 
 // discoverProjectRoots returns the Python project roots derivable
@@ -22,7 +23,7 @@ import (
 //
 // Paths are normalized with filepath.Clean. Duplicates are removed
 // and results are sorted for deterministic ordering.
-func discoverProjectRoots(req model.AnalyzeRequest) []string {
+func discoverProjectRoots(req sdkplugin.AnalyzeRequest) []string {
 	seen := make(map[string]struct{})
 	roots := make([]string, 0)
 
@@ -126,16 +127,16 @@ func isInsideVendoredTree(dir string) bool {
 // isPythonPackage reports whether pkg's ecosystem or build system
 // identifies it as a Python (PyPI) package. Mirrors the equivalent
 // helpers in govulncheck and jsreach.
-func isPythonPackage(pkg *model.DependencyNode) bool {
+func isPythonPackage(pkg *sdkmodel.DependencyNode) bool {
 	if pkg == nil {
 		return false
 	}
-	if pkg.Ecosystem == model.EcosystemPython {
+	if pkg.Ecosystem == sdkmodel.EcosystemPython {
 		return true
 	}
 	switch pkg.PackageManager {
-	case model.PackageManagerPip, model.PackageManagerPipenv, model.PackageManagerPoetry, model.PackageManagerUV, model.PackageManagerPDM, model.PackageManagerSetupPy:
+	case sdkmodel.PackageManagerPip, sdkmodel.PackageManagerPipenv, sdkmodel.PackageManagerPoetry, sdkmodel.PackageManagerUV, sdkmodel.PackageManagerPDM, sdkmodel.PackageManagerSetupPy:
 		return true
 	}
-	return pkg.Language == model.LanguagePython
+	return pkg.Language == sdkmodel.LanguagePython
 }
