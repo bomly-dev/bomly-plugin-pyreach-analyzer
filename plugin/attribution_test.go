@@ -5,41 +5,43 @@ import (
 	"testing"
 	"time"
 
-	model "github.com/bomly-dev/bomly-sdk"
 	"github.com/bomly-dev/bomly-sdk/testkit"
+
+	sdkmodel "github.com/bomly-dev/bomly-sdk/model"
+	sdkplugin "github.com/bomly-dev/bomly-sdk/plugin"
 )
 
 // pyNodeIn builds one Python dependency node whose declaration site is the
 // requirements file of projectRoot.
-func pyNodeIn(t *testing.T, name, version, projectRoot string) *model.DependencyNode {
+func pyNodeIn(t *testing.T, name, version, projectRoot string) *sdkmodel.DependencyNode {
 	t.Helper()
-	dep := testkit.MustDependencyCoords(t, model.Coordinates{
-		Name: name, Version: version, Ecosystem: model.EcosystemPython, PackageManager: "pip",
+	dep := testkit.MustDependencyCoords(t, sdkmodel.Coordinates{
+		Name: name, Version: version, Ecosystem: sdkmodel.EcosystemPython, PackageManager: "pip",
 	})
 	if projectRoot != "" {
-		dep.Locations = []model.PackageLocation{{RealPath: filepath.Join(projectRoot, "requirements.txt")}}
+		dep.Locations = []sdkmodel.PackageLocation{{RealPath: filepath.Join(projectRoot, "requirements.txt")}}
 	}
 	dep.PackageRef = dep.NodeID()
 	return dep
 }
 
-func pyGraph(t *testing.T, nodes []*model.DependencyNode, ids []string) (*model.Graph, *model.PackageRegistry) {
+func pyGraph(t *testing.T, nodes []*sdkmodel.DependencyNode, ids []string) (*sdkmodel.Graph, *sdkmodel.PackageRegistry) {
 	t.Helper()
-	g := model.New()
-	registry := model.NewPackageRegistry()
+	g := sdkmodel.New()
+	registry := sdkmodel.NewPackageRegistry()
 	for i, node := range nodes {
 		if err := g.AddNode(node); err != nil {
 			t.Fatalf("AddNode(%s): %v", node.NodeID(), err)
 		}
 		registry.Ensure(node.PackageRef).Vulnerabilities = append(
 			registry.Ensure(node.PackageRef).Vulnerabilities,
-			model.Vulnerability{ID: ids[i], Source: "osv"},
+			sdkmodel.Vulnerability{ID: ids[i], Source: "osv"},
 		)
 	}
 	return g, registry
 }
 
-func pyReachability(t *testing.T, registry *model.PackageRegistry, purl string) *model.Reachability {
+func pyReachability(t *testing.T, registry *sdkmodel.PackageRegistry, purl string) *sdkmodel.Reachability {
 	t.Helper()
 	pkg, ok := registry.Get(purl)
 	if !ok || pkg == nil || len(pkg.Vulnerabilities) == 0 {
@@ -48,7 +50,7 @@ func pyReachability(t *testing.T, registry *model.PackageRegistry, purl string) 
 	return pkg.Vulnerabilities[0].Reachability
 }
 
-func pyRoots(r *model.Reachability) []string {
+func pyRoots(r *sdkmodel.Reachability) []string {
 	if r == nil {
 		return nil
 	}
@@ -72,16 +74,16 @@ func TestEvidenceIsKeyedByTheProjectRootThatEstablishedIt(t *testing.T) {
 
 	apiDep := pyNodeIn(t, "requests", "2.31.0", apiRoot)
 	webDep := pyNodeIn(t, "django", "4.2.0", webRoot)
-	g, registry := pyGraph(t, []*model.DependencyNode{apiDep, webDep}, []string{"PYSEC-1", "PYSEC-2"})
-	req := model.AnalyzeRequest{Graph: g, Registry: registry}
+	g, registry := pyGraph(t, []*sdkmodel.DependencyNode{apiDep, webDep}, []string{"PYSEC-1", "PYSEC-2"})
+	req := sdkplugin.AnalyzeRequest{Graph: g, Registry: registry}
 
-	attributor := model.NewRootAttributor([]string{apiRoot, webRoot}, g)
+	attributor := sdkmodel.NewRootAttributor([]string{apiRoot, webRoot}, g)
 	for _, root := range []string{apiRoot, webRoot} {
 		applyRunnerResult(req, attributor, root, RunnerResult{}, time.Time{})
 	}
 
 	for _, tc := range []struct {
-		dep  *model.DependencyNode
+		dep  *sdkmodel.DependencyNode
 		want string
 	}{{apiDep, apiRoot}, {webDep, webRoot}} {
 		roots := pyRoots(pyReachability(t, registry, tc.dep.PackageRef))
@@ -106,13 +108,13 @@ func TestEvidenceNeverNamesAnOccurrenceNode(t *testing.T) {
 	// "requests" and nothing that could tell the two apart.
 	first := pyNodeIn(t, "requests", "2.31.0", root)
 	second := pyNodeIn(t, "requests", "2.25.1", root)
-	g, registry := pyGraph(t, []*model.DependencyNode{first, second}, []string{"PYSEC-1", "PYSEC-1"})
+	g, registry := pyGraph(t, []*sdkmodel.DependencyNode{first, second}, []string{"PYSEC-1", "PYSEC-1"})
 
-	applyRunnerResult(model.AnalyzeRequest{Graph: g, Registry: registry},
-		model.NewRootAttributor([]string{root}, g), root,
+	applyRunnerResult(sdkplugin.AnalyzeRequest{Graph: g, Registry: registry},
+		sdkmodel.NewRootAttributor([]string{root}, g), root,
 		RunnerResult{ImportedDistributions: map[string]struct{}{"requests": {}}}, time.Time{})
 
-	for _, dep := range []*model.DependencyNode{first, second} {
+	for _, dep := range []*sdkmodel.DependencyNode{first, second} {
 		evidence := pyReachability(t, registry, dep.PackageRef).Evidence
 		if len(evidence) != 1 {
 			t.Fatalf("%s evidence = %d entries, want 1", dep.Version, len(evidence))
@@ -135,13 +137,13 @@ func TestFailedProjectRootStillContributesUnknownEvidence(t *testing.T) {
 	webRoot := filepath.Join(workspace, "apps", "web")
 
 	dep := pyNodeIn(t, "requests", "2.31.0", apiRoot)
-	dep.Locations = append(dep.Locations, model.PackageLocation{
+	dep.Locations = append(dep.Locations, sdkmodel.PackageLocation{
 		RealPath: filepath.Join(webRoot, "requirements.txt"),
 	})
-	g, registry := pyGraph(t, []*model.DependencyNode{dep}, []string{"PYSEC-1"})
-	req := model.AnalyzeRequest{Graph: g, Registry: registry}
+	g, registry := pyGraph(t, []*sdkmodel.DependencyNode{dep}, []string{"PYSEC-1"})
+	req := sdkplugin.AnalyzeRequest{Graph: g, Registry: registry}
 
-	attributor := model.NewRootAttributor([]string{apiRoot, webRoot}, g)
+	attributor := sdkmodel.NewRootAttributor([]string{apiRoot, webRoot}, g)
 	applyRunnerResult(req, attributor, apiRoot, RunnerResult{}, time.Time{})
 	annotateProjectUnknown(req, attributor, webRoot, "missing-toolchain", time.Time{})
 
@@ -149,7 +151,7 @@ func TestFailedProjectRootStillContributesUnknownEvidence(t *testing.T) {
 	if len(r.Evidence) != 2 {
 		t.Fatalf("evidence = %d entries (%v), want one per project root", len(r.Evidence), pyRoots(r))
 	}
-	if r.Status != model.ReachabilityUnknown {
+	if r.Status != sdkmodel.ReachabilityUnknown {
 		t.Errorf("summary = %q, want unknown: one root was never analyzed", r.Status)
 	}
 	if r.Reason == "" {
@@ -167,10 +169,10 @@ func TestSiteOutsideEveryAnalyzedRootIsNotAbsence(t *testing.T) {
 	venv := filepath.Join(t.TempDir(), "shared-venv")
 
 	dep := pyNodeIn(t, "requests", "2.31.0", venv)
-	g, registry := pyGraph(t, []*model.DependencyNode{dep}, []string{"PYSEC-1"})
+	g, registry := pyGraph(t, []*sdkmodel.DependencyNode{dep}, []string{"PYSEC-1"})
 
-	applyRunnerResult(model.AnalyzeRequest{Graph: g, Registry: registry},
-		model.NewRootAttributor([]string{root}, g), root, RunnerResult{}, time.Time{})
+	applyRunnerResult(sdkplugin.AnalyzeRequest{Graph: g, Registry: registry},
+		sdkmodel.NewRootAttributor([]string{root}, g), root, RunnerResult{}, time.Time{})
 
 	r := pyReachability(t, registry, dep.PackageRef)
 	if r == nil || len(r.Evidence) != 1 {
@@ -189,11 +191,11 @@ func TestSiteOutsideEveryAnalyzedRootIsNotAbsence(t *testing.T) {
 func TestDeclaredRootsAreOnlyTrustedWhenTheyShareOurVocabulary(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "app")
 	dep := pyNodeIn(t, "requests", "2.31.0", "")
-	dep.Locations = []model.PackageLocation{{ModuleRoot: "apps/api"}}
-	g, registry := pyGraph(t, []*model.DependencyNode{dep}, []string{"PYSEC-1"})
+	dep.Locations = []sdkmodel.PackageLocation{{ModuleRoot: "apps/api"}}
+	g, registry := pyGraph(t, []*sdkmodel.DependencyNode{dep}, []string{"PYSEC-1"})
 
-	applyRunnerResult(model.AnalyzeRequest{Graph: g, Registry: registry},
-		model.NewRootAttributor([]string{root}, g), root, RunnerResult{}, time.Time{})
+	applyRunnerResult(sdkplugin.AnalyzeRequest{Graph: g, Registry: registry},
+		sdkmodel.NewRootAttributor([]string{root}, g), root, RunnerResult{}, time.Time{})
 
 	if r := pyReachability(t, registry, dep.PackageRef); r == nil || len(r.Evidence) == 0 {
 		t.Fatal("evidence was dropped for a root vocabulary mismatch; the finding is lost")
@@ -204,22 +206,22 @@ func TestDeclaredRootsAreOnlyTrustedWhenTheyShareOurVocabulary(t *testing.T) {
 // halves of the rule hold independently of a full analysis pass.
 func TestAttributorCalibratesOnOverlap(t *testing.T) {
 	node := pyNodeIn(t, "requests", "2.31.0", "")
-	node.Locations = []model.PackageLocation{{ModuleRoot: "/ws/api"}}
-	g := model.New()
+	node.Locations = []sdkmodel.PackageLocation{{ModuleRoot: "/ws/api"}}
+	g := sdkmodel.New()
 	if err := g.AddNode(node); err != nil {
 		t.Fatal(err)
 	}
 
-	shared := model.NewRootAttributor([]string{"/ws/api", "/ws/web"}, g)
-	if got := shared.Attribute(node, "/ws/api"); got != model.AttributedToSite {
+	shared := sdkmodel.NewRootAttributor([]string{"/ws/api", "/ws/web"}, g)
+	if got := shared.Attribute(node, "/ws/api"); got != sdkmodel.AttributedToSite {
 		t.Errorf("attribute(own root) = %v, want attributed-to-site", got)
 	}
-	if got := shared.Attribute(node, "/ws/web"); got != model.AttributedElsewhere {
+	if got := shared.Attribute(node, "/ws/web"); got != sdkmodel.AttributedElsewhere {
 		t.Errorf("attribute(other root) = %v, want attributed-elsewhere", got)
 	}
 
-	foreign := model.NewRootAttributor([]string{"/other/one"}, g)
-	if got := foreign.Attribute(node, "/other/one"); got != model.AttributedToRootOnly {
+	foreign := sdkmodel.NewRootAttributor([]string{"/other/one"}, g)
+	if got := foreign.Attribute(node, "/other/one"); got != sdkmodel.AttributedToRootOnly {
 		t.Errorf("attribute under a foreign vocabulary = %v, want attributed-to-root-only", got)
 	}
 }
