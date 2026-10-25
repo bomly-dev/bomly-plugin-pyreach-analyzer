@@ -61,6 +61,14 @@ func (a Analyzer) Descriptor() sdkplugin.AnalyzerDescriptor {
 		SupportedLanguages: []sdkmodel.Language{sdkmodel.LanguagePython},
 		SupportedTiers:     []sdkmodel.ReachabilityTier{sdkmodel.TierPackage},
 		Capabilities:       []string{sdkplugin.CapabilityPackageUpdates},
+		// pyreach reads Python source, and only annotates advisories a
+		// matcher already put in the registry for Python packages in the
+		// graph.
+		Requires: sdkplugin.Requirements{
+			sdkplugin.RequirementSourceTree,
+			sdkplugin.RequirementDependencyGraph,
+			sdkplugin.RequirementVulnerabilityRecords,
+		},
 	}
 }
 
