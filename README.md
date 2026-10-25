@@ -16,7 +16,7 @@ under `<user cache dir>/bomly/analyzers/pyreach/` (24h TTL).
 
 - **Ecosystem:** Python (pip, Pipenv, Poetry, uv, PDM)
 - **Tiers:** package
-- **Requires:** nothing besides the sources — no Python interpreter needed. The analyzer declares the pipeline data it needs -- a source tree, a dependency graph, and vulnerability records from a matcher -- so Bomly skips it, with a warning, when a scan cannot supply them.
+- **Requires:** a source tree, a dependency graph, and vulnerability records from a matcher; Bomly skips the analyzer, with a warning, when a scan cannot supply them. No Python interpreter is needed.
 
 ## Access
 
@@ -24,7 +24,8 @@ under `<user cache dir>/bomly/analyzers/pyreach/` (24h TTL).
 
 | Access | Why |
 | --- | --- |
-| Reads `project` | The `.py` sources it scans for imports, and the project files (`pyproject.toml`, lockfiles, `requirements*.txt`, ...) that mark a project root. Finding a root walks upward from each manifest to the nearest directory holding one of those files |
+| Reads `project` | The `.py` sources it scans for imports, and the project files (`pyproject.toml`, lockfiles, `requirements*.txt`, ...) that mark a project root |
+| Reads `any` | Finding a project root walks upward from each candidate path (package locations and the scan target) to the nearest directory holding one of those files, which can be above the scan target |
 | Reads and writes `cache` | The result cache under `<user cache dir>/bomly/analyzers/pyreach/` |
 | Environment `HOME`, `XDG_CACHE_HOME`, `LocalAppData` | Locating the user cache directory (`os.UserCacheDir`: `XDG_CACHE_HOME` or `HOME` on Linux, `HOME` on macOS, `LocalAppData` on Windows) |
 
